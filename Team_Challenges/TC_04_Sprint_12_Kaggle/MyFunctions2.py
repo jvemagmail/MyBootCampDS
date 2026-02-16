@@ -7,57 +7,28 @@ from sklearn.metrics import root_mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 import urllib.request
+import re
 
 def screen_resolution_split(df):
 
     # Posibles valores después de examinar el dataset entero laptops.csv
     features_resolution = ["Full HD", "IPS Panel", "Touchscreen", "4K Ultra HD", "Retina Display", "Quad HD+"]
-    
-    # Para cada valor creamos una columna binaria 
-    # indicando si ese valor está presente en la columna "ScreenResolution" 
-    # y luego lo eliminamos de la cadena
+
+    # Crear una columna binaria para cada tipo de resolución
     for feature in features_resolution:
-        df[feature] = df["ScreenResolution"].str.contains(feature).astype(int)
-        df["ScreenResolution"] = df["ScreenResolution"].str.replace(feature, "")
-        
+        col_name = feature.replace(" ", "_").replace("+", "plus").replace("-", "_").replace(",", "").replace("/", "_")
+        df[col_name] = df["ScreenResolution"].apply(lambda x: int(feature in str(x)))
 
-    df["ScreenResolution"] = df["ScreenResolution"].str.replace("/", "")
+    # Limpiar la columna para que solo quede numxnum (si existe)
+    df["ScreenResolution"] = df["ScreenResolution"].str.extract(r"(\d{3,5}x\d{3,5})")
 
-    # # Separar la resolución en dos columnas: ancho y alto
-    # df[["Screen_Width", "Screen_Height"]] = df["ScreenResolution"].str.split("x", expand=True).astype(int)
+    # Extraer ancho y alto de la resolución
+    df['Resolution_width'] = df['ScreenResolution'].str.extract(r'(\d+)x')[0].astype(int)
+    df['Resolution_height'] = df['ScreenResolution'].str.extract(r'x(\d+)')[0].astype(int)
+    df['PPI'] = np.sqrt(df['Resolution_width']**2 + df['Resolution_height']**2) / df['Inches']
+
+    df.drop(["ScreenResolution", 'Resolution_width', 'Resolution_height', 'Inches'], axis=1, inplace=True)
     
-    # df["ScreenResolution"] = (df["Screen_Width"] * df["Screen_Height"]).astype(int)
-
-    # # Eliminar la columna original 
-    # #df.drop("ScreenResolution", axis=1, inplace=True)
-    # df.drop(["Screen_Width", "Screen_Height"], axis=1, inplace=True)
-    
-def screen_resolution_split2(df, df_median):
-
-    # Posibles valores después de examinar el dataset entero laptops.csv
-    features_resolution = ["Full HD", "IPS Panel", "Touchscreen", "4K Ultra HD", "Retina Display", "Quad HD+"]
-
-    # Para cada valor creamos una columna binaria indicando si ese valor está presente en la columna "ScreenResolution"
-    for feature in features_resolution:
-        df_median[feature] = df_median["ScreenResolution"].str.contains(feature).astype(int)
-        df[feature] = df["ScreenResolution"].str.contains(feature).astype(int)
-        df["ScreenResolution"] = df["ScreenResolution"].str.replace(feature, "")
-
-    df["ScreenResolution"] = df["ScreenResolution"].str.replace("/", "")
-
-    from itertools import combinations
-    # Para cada combinación de 2 features_resolution, calcular la mediana y asignar a combo_resolution si el registro tiene ambas features
-    df["combo_resolution"] = 0
-    for combo in combinations(features_resolution, 2):
-        mask = (df[list(combo)] == 1).all(axis=1)
-        mask_median = (df_median[list(combo)] == 1).all(axis=1)
-        median_price = df_median.loc[mask_median, "Price_in_euros"].median() if mask_median.any() else 0
-        df.loc[mask, "combo_resolution"] = median_price
-
-    
-    for feature in features_resolution:
-        df.drop(feature, axis=1, inplace=True)
-
 def replace_value(df, col, old, new, new_type=int):
 
     # Nueva columna con el mismo nombre pero añadiendo el valor que se ha reemplazado
@@ -72,28 +43,72 @@ def replace_value(df, col, old, new, new_type=int):
 def memory_split(df):
     
     features_memory = ["SSD", "HDD", "Flash Storage", "Hybrid"]
-    
+
+    # Crear una columna binaria para cada tipo de memoria
+    for feature in features_memory:
+        col_name = feature.replace(" ", "_").replace("+", "plus").replace("-", "_").replace(",", "").replace("/", "_")
+        df[col_name] = df["Memory"].apply(lambda x: int(feature in str(x)))
+
     # Separar la memoria en dos columnas si hay un +
     df[["Memory1", "Memory2"]] = df["Memory"].str.split("+", expand=True).astype(str)
 
+    df["Memory_GB"] = 0
+
+    for i in ["1", "2"]:
+        col = "Memory" + i
+        def extract_gb(x):
+            if pd.isnull(x):
+                return 0
+            s = str(x)
+            # Elimina el tipo de memoria si está presente
+            for f in features_memory:
+                s = s.replace(f, "")
+            s = s.strip()
+            if "GB" in s:
+                return int(s.replace("GB", "").strip())
+            elif "TB" in s:
+                return int(float(s.replace("TB", "").strip()) * 1024)
+            elif s.isdigit():
+                return int(s)
+            else:
+                return 0
+        df["Memory_GB"] = df["Memory_GB"] + df[col].apply(extract_gb)
+
+    df.drop(["Memory", "Memory1", "Memory2"], axis=1, inplace=True)
+
     # Llenar las nuevas columnas con el tipo de memoria correspondiente, 
     # eliminando el nombre del tipo de memoria y dejando solo la capacidad
-    # Eliminamos las unidades de GB y TB, y convertimos a un tipo numérico, asegurándonos de convertir TB a GB (1 TB = 1024 GB)
-    for feature in features_memory:
-    
-        for i in ["1", "2"]:
-            col = feature + i
-            df[col] = df["Memory" + i].apply(lambda x: x.replace(feature, "").strip() if pd.notnull(x) and feature in x else np.nan)
-            df[col] = df[col].apply(lambda x: int(x.replace("GB", "").strip()) if pd.notnull(x) and "GB" in str(x) \
-                    else (int(float(x.replace("TB", "").strip()) * 1024) if pd.notnull(x) and "TB" in str(x) else 0))
+    # Eliminamos las unidades de GB y TB, y convertios a un tipo numérico, asegurándonos de convertir TB a GB (1 TB = 1024 GB)
+    # for feature in features_memory:
+    #     for i in ["1", "2"]:
+    #         col = feature + i
+    #         df[col] = df["Memory" + i].apply(lambda x: x.replace(feature, "").strip() if pd.notnull(x) and feature in x else np.nan)
+    #         df[col] = df[col].apply(lambda x: int(x.replace("GB", "").strip()) if pd.notnull(x) and "GB" in str(x) \
+    #                 else (int(float(x.replace("TB", "").strip()) * 1024) if pd.notnull(x) and "TB" in str(x) else 0))
+    #     feature_gb = feature + "_GB"
+    #     df[feature_gb] = df[feature + "1"] + df[feature + "2"]
 
-        # Agrupar las dos columnas de memoria en una sola columna que indique la cantidad total de memoria, 
-        # sumando las dos columnas y asegurándonos de manejar los valores nulos correctamente    
-        feature_gb = feature + "_GB"
-        df[feature_gb] = df[feature + "1"] + df[feature + "2"]
-        
+    # # Crear columna para marcar filas donde no hay ni SSD ni HDD usando la columna original 'Memory'
+    # mask_no_ssd_hdd = ~df["Memory"].str.contains("SSD") & ~df["Memory"].str.contains("HDD")
+
+    # # Extraer valores numGB o numTB de la columna original 'Memory'
+    # def extract_gb_tb(val):
+    #     import re
+    #     if not isinstance(val, str):
+    #         return 0
+    #     match_gb = re.search(r"(\d+(?:\.\d+)?)GB", val)
+    #     match_tb = re.search(r"(\d+(?:\.\d+)?)TB", val)
+    #     gb = float(match_gb.group(1)) if match_gb else 0
+    #     tb = float(match_tb.group(1)) * 1024 if match_tb else 0
+    #     return int(gb + tb)
+
+    # df["Memory_no_SSD_HDD"] = 0
+    # df.loc[mask_no_ssd_hdd, "Memory_no_SSD_HDD"] = df.loc[mask_no_ssd_hdd, "Memory"].apply(extract_gb_tb)
+
+    #df["Memory_GB_TB"] = df["Memory"].apply(extract_gb_tb)
+
     # Eliminar las columnas originales de memoria
-    df.drop(["Memory", "Memory1", "Memory2"] + [f"{feature}{i}" for feature in features_memory for i in ["1", "2"]], axis=1, inplace=True)
+    #df.drop(["Memory", "Memory1", "Memory2"] + [f"{feature}{i}" for feature in features_memory for i in ["1", "2"]], axis=1, inplace=True)
 
 def memory_split2(df):
     
@@ -408,4 +423,53 @@ def outlier_iqr(df, col):
     outliers = df[(df[col] > upper_bound) | (df[col] < lower_bound)]
     print(f"\nOutliers in {col}: \n{outliers[[col]].reset_index()}")
     
-     
+def gpu_split3(df):
+
+    # Aplicar funciones
+    df['brand_gpu'] = df['Gpu'].apply(get_brand)
+    df['family_gpu'] = df['Gpu'].apply(get_family)
+    #df['model_number_gpu'] = df['Gpu'].apply(get_model_number)
+
+    # Eliminamos la columna original de GPU
+    df.drop("Gpu", axis=1, inplace=True)
+
+
+# Función para extraer marca
+def get_brand(name):
+    if 'intel' in name.lower():
+        return 'Intel'
+    elif 'amd' in name.lower():
+        return 'AMD'
+    elif 'nvidia' in name.lower():
+        return 'Nvidia'
+    else:
+        return 'Other'
+
+# Función para extraer familia
+familias = ['Iris', 'HD Graphics', 'UHD Graphics', 'Radeon', 'GeForce', 'FirePro', 'Quadro']
+def get_family(name):
+    for fam in familias:
+        if fam.lower() in name.lower():
+            return fam
+    return 'Other'
+
+# Función para extraer número de modelo (primer número de 3-4 dígitos)
+def get_model_number(name):
+    match = re.search(r'(\d{3,4})', name)
+    if match:
+        return match.group(1)
+    return None
+
+
+def categorizar_procesador(cpu):
+    cpu = cpu.lower()
+    if 'i9' in cpu or 'ryzen 9' in cpu or 'threadripper' in cpu:
+        return 4  # Entusiasta
+    elif 'i7' in cpu or 'ryzen 7' in cpu:
+        return 3  # Alta
+    elif 'i5' in cpu or 'ryzen 5' in cpu:
+        return 2  # Media
+    elif 'i3' in cpu or 'ryzen 3' in cpu or 'celeron' in cpu or 'pentium' in cpu:
+        return 1  # Entrada
+    else:
+        return 0  # Otros / Antiguos
